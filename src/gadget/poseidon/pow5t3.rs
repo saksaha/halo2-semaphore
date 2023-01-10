@@ -10,8 +10,8 @@ use halo2::{
 use super::{PoseidonDuplexInstructions, PoseidonInstructions};
 // use crate::circuit::gadget::utilities::{CellValue, Var};
 // use crate::{CellValue, Var};
-use crate::utils::{CellValue, Var};
 use crate::primitives::poseidon::{Domain, Mds, Spec, SpongeState, State};
+use crate::utils::{CellValue, Var};
 // use crate::CellValue;
 
 const WIDTH: usize = 3;
@@ -308,6 +308,7 @@ impl<F: FieldExt, S: Spec<F, WIDTH, 2>> PoseidonDuplexInstructions<F, S, WIDTH, 
                         0,
                         value,
                     )?;
+
                     Ok(StateWord {
                         var,
                         value: Some(value),
@@ -339,12 +340,14 @@ impl<F: FieldExt, S: Spec<F, WIDTH, 2>> PoseidonDuplexInstructions<F, S, WIDTH, 
                 // Load the initial state into this region.
                 let mut load_state_word = |i: usize| {
                     let value = initial_state[i].value;
+
                     let var = region.assign_advice(
                         || format!("load state_{}", i),
                         config.state[i],
                         0,
                         || value.ok_or(Error::SynthesisError),
                     )?;
+
                     region.constrain_equal(initial_state[i].var, var)?;
                     Ok(StateWord { var, value })
                 };
@@ -708,23 +711,23 @@ impl<F: FieldExt> Pow5T3State<F> {
 //             layouter.assign_region(
 //                 || "constrain final state",
 //                 |mut region| {
-    //                 let mut final_state_word = |i: usize| {
-    //                     let var = region.assign_advice(
-    //                         || format!("load final_state_{}", i),
-    //                         config.state[i],
-    //                         0,
-    //                         || Ok(expected_final_state[i]),
-    //                     )?;
-    //                     region.constrain_equal(final_state[i].var, var)
-    //                 };
+//                 let mut final_state_word = |i: usize| {
+//                     let var = region.assign_advice(
+//                         || format!("load final_state_{}", i),
+//                         config.state[i],
+//                         0,
+//                         || Ok(expected_final_state[i]),
+//                     )?;
+//                     region.constrain_equal(final_state[i].var, var)
+//                 };
 
-    //                 final_state_word(0)?;
-    //                 final_state_word(1)?;
-    //                 final_state_word(2)
-    //             },
-    //         )
-    //     }
-    // }
+//                 final_state_word(0)?;
+//                 final_state_word(1)?;
+//                 final_state_word(2)
+//             },
+//         )
+//     }
+// }
 
 //     #[test]
 //     fn poseidon_permute() {
@@ -873,3 +876,4 @@ impl<F: FieldExt> Pow5T3State<F> {
 //             .unwrap();
 //     }
 // }
+

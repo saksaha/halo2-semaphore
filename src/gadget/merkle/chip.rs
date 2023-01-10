@@ -1,15 +1,17 @@
 use halo2::{
     circuit::{Chip, Layouter},
-    plonk::{Advice, Column, ConstraintSystem, Error, Selector, Expression},
+    pasta::Fp,
+    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
     poly::Rotation,
-    pasta::Fp
 };
 
-use crate::utils::Var;
-use super::MerkleInstructions;
 use super::super::super::CellValue;
+use super::MerkleInstructions;
+use crate::utils::Var;
 
-use crate::gadget::poseidon::{Pow5T3Config as PoseidonConfig, Pow5T3Chip as PoseidonChip, Hash as PoseidonHash};
+use crate::gadget::poseidon::{
+    Hash as PoseidonHash, Pow5T3Chip as PoseidonChip, Pow5T3Config as PoseidonConfig,
+};
 use crate::primitives::poseidon::{ConstantLength, P128Pow5T3};
 
 #[derive(Clone, Debug)]
@@ -17,11 +19,11 @@ pub struct MerkleConfig {
     pub advice: [Column<Advice>; 3],
     pub s_bool: Selector,
     pub s_swap: Selector,
-    pub hash_config: PoseidonConfig<Fp>
+    pub hash_config: PoseidonConfig<Fp>,
 }
 
 #[derive(Clone, Debug)]
-pub struct MerkleChip{
+pub struct MerkleChip {
     pub config: MerkleConfig,
 }
 
@@ -74,14 +76,12 @@ impl MerkleChip {
             advice,
             s_bool,
             s_swap,
-            hash_config
+            hash_config,
         }
     }
 
     pub fn construct(config: <Self as Chip<Fp>>::Config) -> Self {
-        Self {
-            config,
-        }
+        Self { config }
     }
 }
 // ANCHOR_END: chip-config
@@ -97,7 +97,6 @@ impl MerkleInstructions for MerkleChip {
         position_bit: Option<Fp>,
         layer: usize,
     ) -> Result<Self::Cell, Error> {
-
         let config = self.config.clone();
 
         let mut left_digest = None;
@@ -139,11 +138,16 @@ impl MerkleInstructions for MerkleChip {
                 config.s_bool.enable(&mut region, row_offset)?;
                 config.s_swap.enable(&mut region, row_offset)?;
 
-
                 let (l_value, r_value): (Fp, Fp) = if position_bit == Some(Fp::zero()) {
-                    (left_or_digest_value.ok_or(Error::SynthesisError)?, sibling.ok_or(Error::SynthesisError)?)
+                    (
+                        left_or_digest_value.ok_or(Error::SynthesisError)?,
+                        sibling.ok_or(Error::SynthesisError)?,
+                    )
                 } else {
-                    (sibling.ok_or(Error::SynthesisError)?, left_or_digest_value.ok_or(Error::SynthesisError)?)
+                    (
+                        sibling.ok_or(Error::SynthesisError)?,
+                        left_or_digest_value.ok_or(Error::SynthesisError)?,
+                    )
                 };
 
                 row_offset += 1;
@@ -155,7 +159,6 @@ impl MerkleInstructions for MerkleChip {
                     || Ok(l_value),
                 )?;
 
-
                 let r_cell = region.assign_advice(
                     || format!("witness right (layer {})", layer),
                     config.advice[1],
@@ -163,35 +166,47 @@ impl MerkleInstructions for MerkleChip {
                     || Ok(r_value),
                 )?;
 
-                left_digest = Some(CellValue { cell: l_cell, value: Some(l_value) });
-                right_digest = Some(CellValue { cell: r_cell, value: Some(r_value) });
+                left_digest = Some(CellValue {
+                    cell: l_cell,
+                    value: Some(l_value),
+                });
+                right_digest = Some(CellValue {
+                    cell: r_cell,
+                    value: Some(r_value),
+                });
 
                 Ok(())
             },
         )?;
 
         let poseidon_chip = PoseidonChip::construct(config.hash_config.clone());
-        let mut poseidon_hasher: PoseidonHash
-        <
-            Fp, 
-            PoseidonChip<Fp>, 
-            P128Pow5T3, 
-            ConstantLength<2_usize>, 
-            3_usize, 
-            2_usize
-        > 
-            = PoseidonHash::init(poseidon_chip, layouter.namespace(|| "init hasher"), ConstantLength::<2>)?;
+        let mut poseidon_hasher: PoseidonHash<
+            Fp,
+            PoseidonChip<Fp>,
+            P128Pow5T3,
+            ConstantLength<2_usize>,
+            3_usize,
+            2_usize,
+        > = PoseidonHash::init(
+            poseidon_chip,
+            layouter.namespace(|| "init hasher"),
+            ConstantLength::<2>,
+        )?;
 
         let message = [left_digest.unwrap(), right_digest.unwrap()];
         let loaded_message = poseidon_hasher.witness_message_pieces(
             config.hash_config.clone(),
             layouter.namespace(|| format!("witnessing hash of a layer: {}", layer)),
-            message
+            message,
         )?;
 
-        let word = poseidon_hasher.hash(layouter.namespace(|| format!("hashing layer: {}", layer)), loaded_message)?;
+        let word = poseidon_hasher.hash(
+            layouter.namespace(|| format!("hashing layer: {}", layer)),
+            loaded_message,
+        )?;
         let digest: CellValue<Fp> = word.inner().into();
 
         Ok(digest)
     }
 }
+
