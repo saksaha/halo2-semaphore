@@ -1,25 +1,28 @@
-use halo2::{
-    circuit::{Chip, Layouter},
-    pasta::Fp,
-    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
-    poly::Rotation,
-};
+// use halo2::{
+//     circuit::{Chip, Layouter},
+//     pasta::Fp,
+//     plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
+//     poly::Rotation,
+// };
 
-use super::super::super::CellValue;
+use halo2_gadgets::poseidon::Pow5Config;
+use halo2_proofs::circuit::{AssignedCell, Chip, Layouter, Value};
+use halo2_proofs::pasta::Fp;
+use halo2_proofs::plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector};
+use halo2_proofs::poly::Rotation;
+
+// use super::super::super::CellValue;
 use super::MerkleInstructions;
-use crate::utils::Var;
+// use crate::utils::Var;
 
-use crate::gadget::poseidon::{
-    Hash as PoseidonHash, Pow5T3Chip as PoseidonChip, Pow5T3Config as PoseidonConfig,
-};
-use crate::primitives::poseidon::{ConstantLength, P128Pow5T3};
+// use crate::primitives::poseidon::{ConstantLength, P128Pow5T3};
 
 #[derive(Clone, Debug)]
 pub struct MerkleConfig {
     pub advice: [Column<Advice>; 3],
     pub s_bool: Selector,
     pub s_swap: Selector,
-    pub hash_config: PoseidonConfig<Fp>,
+    pub hash_config: Pow5Config<Fp>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,14 +90,17 @@ impl MerkleChip {
 // ANCHOR_END: chip-config
 
 impl MerkleInstructions for MerkleChip {
-    type Cell = CellValue<Fp>;
+    // type Cell = CellValue<Fp>;
+    type Cell = AssignedCell<Fp, Fp>;
 
     fn hash_layer(
         &self,
         mut layouter: impl Layouter<Fp>,
         leaf_or_digest: Self::Cell,
-        sibling: Option<Fp>,
-        position_bit: Option<Fp>,
+        // sibling: Option<Fp>,
+        // position_bit: Option<Fp>,
+        sibling: Value<Fp>,
+        position_bit: Value<Fp>,
         layer: usize,
     ) -> Result<Self::Cell, Error> {
         let config = self.config.clone();
@@ -107,17 +113,17 @@ impl MerkleInstructions for MerkleChip {
             |mut region| {
                 let mut row_offset = 0;
 
-                let left_or_digest_value = leaf_or_digest.value();
+                let left_or_digest_value = leaf_or_digest;
 
                 let left_or_digest_cell = region.assign_advice(
                     || format!("witness leaf or digest (layer {})", layer),
                     config.advice[0],
                     row_offset,
-                    || left_or_digest_value.ok_or(Error::SynthesisError),
+                    || left_or_digest_value.value().copied(),
                 )?;
 
                 if layer > 0 {
-                    region.constrain_equal(leaf_or_digest.cell(), left_or_digest_cell)?;
+                    region.constrain_equal(leaf_or_digest.cell(), left_or_digest_cell.cell())?;
                     // Should i do permutation here?
                 }
 
@@ -125,55 +131,67 @@ impl MerkleInstructions for MerkleChip {
                     || format!("witness sibling (layer {})", layer),
                     config.advice[1],
                     row_offset,
-                    || sibling.ok_or(Error::SynthesisError),
+                    || sibling,
                 )?;
 
                 let _position_bit_cell = region.assign_advice(
                     || format!("witness positional_bit (layer {})", layer),
                     config.advice[2],
                     row_offset,
-                    || position_bit.ok_or(Error::SynthesisError),
+                    || position_bit,
                 )?;
 
                 config.s_bool.enable(&mut region, row_offset)?;
                 config.s_swap.enable(&mut region, row_offset)?;
 
-                let (l_value, r_value): (Fp, Fp) = if position_bit == Some(Fp::zero()) {
-                    (
-                        left_or_digest_value.ok_or(Error::SynthesisError)?,
-                        sibling.ok_or(Error::SynthesisError)?,
-                    )
-                } else {
-                    (
-                        sibling.ok_or(Error::SynthesisError)?,
-                        left_or_digest_value.ok_or(Error::SynthesisError)?,
-                    )
-                };
+                // let (l_value, r_value): (Fp, Fp) = if position_bit == Some(Fp::zero()) {
+                //     (
+                //         left_or_digest_value.ok_or(Error::Synthesis)?,
+                //         sibling.ok_or(Error::Synthesis)?,
+                //     )
+                // } else {
+                //     (
+                //         sibling.ok_or(Error::Synthesis)?,
+                //         left_or_digest_value.ok_or(Error::Synthesis)?,
+                //     )
+                // };
+                //
 
                 row_offset += 1;
 
-                let l_cell = region.assign_advice(
-                    || format!("witness left (layer {})", layer),
-                    config.advice[0],
-                    row_offset,
-                    || Ok(l_value),
-                )?;
+                let l_value = {
+                    left_or_digest_value
+                        .value()
+                        .copied()
+                        .zip(sibling)
+                        .zip(position_bit)
+                        .map(|((a, b), swap)| if swap == Fp::zero() { a } else { b })
+                };
+
+                region.assign_advice(|| "a_swapped", config.advice[0], 0, || l_value)?;
+
+                // let l_cell = region.assign_advice(
+                //     || format!("witness left (layer {})", layer),
+                //     config.advice[0],
+                //     row_offset,
+                //     || Ok(l_value),
+                // )?;
+                //
+                let r_value = {
+                    left_or_digest_value
+                        .value()
+                        .copied()
+                        .zip(sibling)
+                        .zip(position_bit)
+                        .map(|((a, b), swap)| if swap == Fp::zero() { b } else { a })
+                };
 
                 let r_cell = region.assign_advice(
                     || format!("witness right (layer {})", layer),
                     config.advice[1],
                     row_offset,
-                    || Ok(r_value),
+                    || r_value,
                 )?;
-
-                left_digest = Some(CellValue {
-                    cell: l_cell,
-                    value: Some(l_value),
-                });
-                right_digest = Some(CellValue {
-                    cell: r_cell,
-                    value: Some(r_value),
-                });
 
                 Ok(())
             },
@@ -194,6 +212,7 @@ impl MerkleInstructions for MerkleChip {
         )?;
 
         let message = [left_digest.unwrap(), right_digest.unwrap()];
+
         let loaded_message = poseidon_hasher.witness_message_pieces(
             config.hash_config.clone(),
             layouter.namespace(|| format!("witnessing hash of a layer: {}", layer)),
@@ -209,4 +228,3 @@ impl MerkleInstructions for MerkleChip {
         Ok(digest)
     }
 }
-

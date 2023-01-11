@@ -1,24 +1,34 @@
-use halo2::{
-    circuit::{Layouter, SimpleFloorPlanner},
-    pasta::Fp,
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
-};
+// use halo2::{
+//     circuit::{Layouter, SimpleFloorPlanner},
+//     pasta::Fp,
+//     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
+// };
 
-use pasta_curves::pallas;
+use std::marker::PhantomData;
+
+use halo2_gadgets::{
+    poseidon::{
+        primitives::{ConstantLength, Spec},
+        Hash, Pow5Chip, Pow5Config, Word,
+    },
+    utilities::{UtilitiesInstructions, Var},
+};
+use halo2_proofs::{
+    circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
+    dev::MockProver,
+    pasta::{pallas, Fp},
+    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
+    // poly::Error,
+};
+// use pasta_curves::pallas;
 
 mod gadget;
 mod primitives;
 mod utils;
 
-use gadget::{
-    merkle::{MerkleChip, MerkleConfig, MerklePath},
-    poseidon::{Hash as PoseidonHash, Pow5T3Chip as PoseidonChip, Pow5T3Config as PoseidonConfig},
-};
+use gadget::merkle::{MerkleChip, MerkleConfig, MerklePath};
 
-use crate::{
-    primitives::poseidon::{ConstantLength, P128Pow5T3},
-    utils::{CellValue, UtilitiesInstructions, Var},
-};
+// use crate::primitives::poseidon::{ConstantLength, P128Pow5T3};
 
 pub const MERKLE_DEPTH: usize = 4;
 
@@ -29,121 +39,139 @@ const ROOT: usize = 2;
 
 // Semaphore config
 #[derive(Clone, Debug)]
-pub struct Config {
-    advices: [Column<Advice>; 4],
+pub struct SemaphoreConfig<const WIDTH: usize, const RATE: usize> {
+    advices: Vec<Column<Advice>>,
     instance: Column<Instance>,
     merkle_config: MerkleConfig,
-    poseidon_config: PoseidonConfig<Fp>,
+    poseidon_config: Pow5Config<Fp, WIDTH, RATE>,
 }
 
 // Semaphore circuit
 #[derive(Debug, Default)]
-pub struct SemaphoreCircuit {
-    identity_trapdoor: Option<Fp>,
-    identity_nullifier: Option<Fp>,
-    external_nullifier: Option<Fp>,
-    position_bits: Option<[Fp; MERKLE_DEPTH]>,
-    path: Option<[Fp; MERKLE_DEPTH]>,
-    root: Option<Fp>,
+pub struct SemaphoreCircuit<S, const WIDTH: usize, const RATE: usize>
+where
+    S: Spec<Fp, WIDTH, RATE>,
+{
+    identity_trapdoor: Value<Fp>,
+    identity_nullifier: Value<Fp>,
+    external_nullifier: Value<Fp>,
+    position_bits: Value<[Fp; MERKLE_DEPTH]>,
+    path: Value<[Fp; MERKLE_DEPTH]>,
+    _spec: PhantomData<S>,
 }
 
-impl UtilitiesInstructions<pallas::Base> for SemaphoreCircuit {
-    type Var = CellValue<pallas::Base>;
+// impl UtilitiesInstructions<pallas::Base> for SemaphoreCircuit {
+//     type Var = CellValue<pallas::Base>;
+// }
+//
+impl<S, const WIDTH: usize, const RATE: usize> UtilitiesInstructions<Fp>
+    for SemaphoreCircuit<S, WIDTH, RATE>
+where
+    S: Spec<Fp, WIDTH, RATE>,
+{
+    type Var = AssignedCell<Fp, Fp>;
 }
 
-impl SemaphoreCircuit {
+impl<S, const WIDTH: usize, const RATE: usize> SemaphoreCircuit<S, WIDTH, RATE>
+where
+    S: Spec<Fp, WIDTH, RATE>,
+{
     fn hash(
         &self,
-        config: Config,
+        config: SemaphoreConfig<WIDTH, RATE>,
         mut layouter: impl Layouter<Fp>,
-        message: [CellValue<Fp>; 2],
+        // message: [CellValue<Fp>; 2],
+        message: [AssignedCell<Fp, Fp>; 2],
         to_hash: &str,
-    ) -> Result<CellValue<Fp>, Error> {
+    ) -> Result<AssignedCell<Fp, Fp>, Error> {
         let config = config.clone();
 
         let poseidon_chip = config.construct_poseidon_chip();
 
-        let mut poseidon_hasher: PoseidonHash<
+        let mut poseidon_hasher: Hash<
             Fp,
-            PoseidonChip<Fp>,
-            P128Pow5T3,
+            Pow5Chip<Fp, WIDTH, RATE>,
+            S,
             ConstantLength<2_usize>,
-            3_usize,
-            2_usize,
-        > = PoseidonHash::init(
+            WIDTH,
+            RATE,
+        > = Hash::init(
             poseidon_chip,
             layouter.namespace(|| "init hasher"),
-            ConstantLength::<2>,
+            // ConstantLength::<2>,
         )?;
 
-        let loaded_message = poseidon_hasher.witness_message_pieces(
-            config.poseidon_config,
-            layouter.namespace(|| format!("witnessing: {}", to_hash)),
+        // let loaded_message = poseidon_hasher.witness_message_pieces(
+        //     config.poseidon_config,
+        //     layouter.namespace(|| format!("witnessing: {}", to_hash)),
+        //     message,
+        // )?;
+
+        let digest = poseidon_hasher.hash(
+            layouter.namespace(|| format!("hashing: {}", to_hash)),
             message,
         )?;
 
-        let word = poseidon_hasher.hash(
-            layouter.namespace(|| format!("hashing: {}", to_hash)),
-            loaded_message,
-        )?;
-        let digest: CellValue<Fp> = word.inner().into();
+        // let digest: AssignedCell<Fp, Fp> = word.inner().into();
 
         Ok(digest)
     }
 }
 
-impl Circuit<pallas::Base> for SemaphoreCircuit {
-    type Config = Config;
+impl<S, const WIDTH: usize, const RATE: usize> Circuit<pallas::Base>
+    for SemaphoreCircuit<S, WIDTH, RATE>
+where
+    S: Spec<Fp, WIDTH, RATE>,
+{
+    type Config = SemaphoreConfig<WIDTH, RATE>;
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
-        Self::default()
+        Self {
+            identity_trapdoor: Value::unknown(),
+            identity_nullifier: Value::unknown(),
+            external_nullifier: Value::unknown(),
+            position_bits: Value::unknown(),
+            path: Value::unknown(),
+            _spec: PhantomData,
+        }
     }
 
     fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
-        let advices = [
-            meta.advice_column(),
-            meta.advice_column(),
-            meta.advice_column(),
-            meta.advice_column(),
-        ];
+        let state = (0..WIDTH).map(|_| meta.advice_column()).collect::<Vec<_>>();
+        let partial_sbox = meta.advice_column();
+
+        let rc_a = (0..WIDTH).map(|_| meta.fixed_column()).collect::<Vec<_>>();
+        let rc_b = (0..WIDTH).map(|_| meta.fixed_column()).collect::<Vec<_>>();
+
+        meta.enable_constant(rc_b[0]);
+
+        // let poseidon_config = PoseidonChip::configure(
+        //     meta,
+        //     P128Pow5T3,
+        //     advices[0..3].try_into().unwrap(),
+        //     advices[3],
+        //     rc_a,
+        //     rc_b,
+        // );
+
+        let poseidon_config = Pow5Chip::configure::<S>(
+            meta,
+            state.try_into().unwrap(),
+            partial_sbox,
+            rc_a.try_into().unwrap(),
+            rc_b.try_into().unwrap(),
+        );
+
+        let merkle_config =
+            MerkleChip::configure(meta, state.try_into().unwrap(), poseidon_config.clone());
 
         let instance = meta.instance_column();
         meta.enable_equality(instance.into());
 
-        for advice in advices.iter() {
-            meta.enable_equality((*advice).into());
-        }
-
-        let rc_a = [
-            meta.fixed_column(),
-            meta.fixed_column(),
-            meta.fixed_column(),
-        ];
-        let rc_b = [
-            meta.fixed_column(),
-            meta.fixed_column(),
-            meta.fixed_column(),
-        ];
-
-        meta.enable_constant(rc_b[0]);
-
-        let poseidon_config = PoseidonChip::configure(
-            meta,
-            P128Pow5T3,
-            advices[0..3].try_into().unwrap(),
-            advices[3],
-            rc_a,
-            rc_b,
-        );
-        let merkle_config = MerkleChip::configure(
-            meta,
-            advices[0..3].try_into().unwrap(),
-            poseidon_config.clone(),
-        );
-
-        Config {
-            advices,
+        SemaphoreConfig {
+            // advices,
+            advices: state,
             instance,
             merkle_config,
             poseidon_config,
@@ -224,12 +252,13 @@ impl Circuit<pallas::Base> for SemaphoreCircuit {
             calculated_root,
             ROOT,
         )?;
+
         Ok({})
     }
 }
 
 fn main() {
-    use halo2::dev::MockProver;
+    // use halo2::dev::MockProver;
 
     use crate::primitives::poseidon::Hash;
 
@@ -268,7 +297,6 @@ fn main() {
         external_nullifier: Some(external_nullifier),
         position_bits: Some(position_bits),
         path: Some(path),
-        root: Some(root),
     };
 
     let mut public_inputs = vec![external_nullifier, nullifier_hash, root];
